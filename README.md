@@ -3,7 +3,10 @@ Arduino nano based energy meter designed to monitor various battery capacities a
 
 It uses a 0.96" 128*64 OLED display for direct feedback, a SD breakout module for logging purposes, and a relay module to cut batteries off as a protection measure. 
 
-##Required libraries
+## Required libraries
+
 https://github.com/greiman/SSD1306Ascii
+
 https://github.com/greiman/SdFat
+
 https://github.com/SV-Zanshin/INA

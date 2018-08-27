@@ -1,25 +1,19 @@
-
-// For debug purpose : disable SD logging or OLED display
-#define USE_SD 1
-#define USE_OLED 1
-
 // Power meter module
 #include <INA.h>
 INA_Class INA;
 
-
 //SD logger
 #include "SdFat.h"
-#define CS 4
+#define CS 4 // chip select
+#define CD 8 // card detect, unused
 #define SD_FREQ 50
-char LOG_FILENAME[] =  "conso.csv";
+char LOG_FILENAME[] =  "energie.csv";
 
 SdFat SD;
 File powerLog;
 File presenceTest;
 boolean SD_presence = false;
-#define USE_COMMA 0 // remplace le '.' par une virgule ',' dans les décimaux, pour Excel
-
+#define USE_COMMA true // remplace le '.' par une virgule ',' dans les décimaux, pour Excel
 
 
 // OLED display
@@ -32,22 +26,27 @@ SSD1306AsciiAvrI2c display;
 #define BTN_PLUS   2
 #define BTN_MINUS  3
 #define RELAY_OUT  6
-#define RELAY_HIGH LOW
-#define RELAY_LOW HIGH
-
+#define RELAY_HIGH HIGH
+#define RELAY_LOW LOW
 
 
 unsigned long previousMillis = 0;
 unsigned int loops = 0;
-#define INTERVAL 100
+#define INTERVAL 100 // ms
 
 float shuntvoltage = 0;
 float busvoltage = 0;
 float current_mA = 0;
 float loadvoltage = 0;
 float energy = 0;
+#define CURRENT_RESCALER 0.559808 // facteur proportionnel à calculer expérimentalement pour corriger la tolérance du shunt 0.1 Ohm
+
+// Valeurs pas défaut des cutoffs
 float Vcutoff = 3.0; // 3.0 volts (cellule lithium)
-long Tcutoff = 600000; // 10 minutes
+long Tcutoff = 600000; // 10 minutes = 10 * 60 * 1000 ms
+const float VStep = 0.1; // Ajustement par pas de 0,1 volts
+const long TStep = 600000; // Pas de 10 minutes
+
 
 char cutoffMode = 'V'; // mode de coupure : V ou T
 
@@ -70,9 +69,9 @@ void setup() {
 
   if (!SD.begin(CS, SD_SCK_MHZ(SD_FREQ))) {
     SD.errorPrint();
-    Serial.println("Carte SD inaccessible :(");
+    Serial.println(F("Carte SD inaccessible :("));
   }else {
-    Serial.println("Accès à la carte OK");
+    Serial.println(F("Accès à la carte OK"));
     SD_presence = true;
   }
   
@@ -83,14 +82,15 @@ void setup() {
     
   displaySDPresence();
 
-  int device = INA.begin(1,100000);         // Set expected Amps and resistor
-                              // TODO : adjust using the other background sketch
-                              
+  //int device = 
+//  INA.begin(3.2,100000);                                                      // Set expected Amps and resistor
+  INA.begin(3.2,55981);                                                      // Set expected Amps and resistor
+//  INA.begin(3.2,55981);                                                      // Set expected Amps and resistor
+  // 0.18 Ohms ?
   INA.setBusConversion(8500);                                                 // Maximum conversion time 8.244ms  //
   INA.setShuntConversion(8500);                                               // Maximum conversion time 8.244ms  //
   INA.setAveraging(128);                                                      // Average each reading n-times     //
   INA.setMode(INA_MODE_CONTINUOUS_BOTH);                                      // Bus/shunt measured continuously  //
-//  INA.AlertOnBusOverVoltage(true,5000);                                       // Trigger alert if over 5V on bus
 }
 
 //boolean checkSDPresence();
@@ -173,26 +173,23 @@ void checkButtons(){
     cutoffMode = cutoffMode == 'T' ? 'V' : 'T';
     delay(300);
   }else if (plus){
-    Serial.println("btn plus");
 
     switch(cutoffMode){
       case 'T' : 
-      Tcutoff += 600000;
-      Tcutoff = max(0, Tcutoff); // max : 99h
+      Tcutoff = min(long(356400000), long(Tcutoff + TStep)); // max : 99h      
         break;
       case 'V':
-      Vcutoff += 0.1;
+      Vcutoff += VStep;
       break;
     }
     
   }else if(minus){
     switch(cutoffMode){
       case 'T' : 
-      Tcutoff -= 600000;
-      Tcutoff = min(99 * 3600000, Tcutoff);
+      Tcutoff = max(0, Tcutoff - TStep);
         break;
       case 'V':
-      Vcutoff = max(0, Vcutoff - 0.1);
+      Vcutoff = max(0, Vcutoff - VStep);
       break;
     }
     
@@ -214,12 +211,9 @@ void storeData(){
       String row = (String(millis()) + ";" +  String(loadvoltage, 3) + ";" + String(current_mA, 3) + ";" + String(energy, 3) + ";" + String(energy/loadvoltage, 3));
 
       #if USE_COMMA
-        //row = row.replace('.', ',');
-        //powerLog.println( String(row.replace(".", ",") );
-      #else
-        powerLog.println( row);
+        row.replace('.', ',');        
       #endif
-      
+      powerLog.println(row);
       
       Serial.println(row);
       
@@ -234,53 +228,45 @@ void storeData(){
  * Met à jour SD_presence
  */
 boolean checkSDPresence(){
-  long duree = millis();
 
   // Si la carte est de base absente, vérifier tous les X cycles si elle a été insérée
   if( !SD_presence ){
     
-    if(loops % 100 == 0){
+    if(digitalRead(CD)){
       boolean inserted = SD.begin(CS, SD_SCK_MHZ(SD_FREQ));
       
       if(inserted){
         Serial.println(F("Insérée !"));
         SD_presence = true;
         displaySDPresence(); // si carte insérée, afficher "Carte SD insérée"
-//        if(SD.exists(LOG_FILENAME)){
-//          Serial.println("Alerte : " + String(LOG_FILENAME) + " existe deja");
-//        }
-        
       }
     }
     
   }
 
   // Si la carte est de base présente, vérifier si elle a été retirée
-  else {
-    presenceTest = SD.open("presence.test", FILE_WRITE);
-    int tries = 2;
-
-    // On a droit à X essais pour éviter les faux négatifs
-    while(!presenceTest && tries > 0){
-//      SD.begin(CS, SD_SCK_MHZ(SD_FREQ));
-      
-      presenceTest = SD.open("presence.test", FILE_WRITE);
-      tries--;  
-    }
-    
-    if (!presenceTest) {
-      SD_presence = false;
+  else if(!digitalRead(CD)){
+    SD_presence = false;
       Serial.println(F("SD retirée"));
       displaySDPresence(); // si carte retirée, afficher "Carte SD retirée"
-      Serial.println(F("displayed SD presence"));
-    }else{
-      presenceTest.close();  
-    }
+      presenceTest = SD.open("presence.test", FILE_WRITE);
+//    int tries = 2;
+//
+//    // On a droit à X essais pour éviter les faux négatifs
+//    while(!presenceTest && tries > 0){
+//      presenceTest = SD.open("presence.test", FILE_WRITE);
+//      tries--;  
+//    }
+//    
+//    if (!presenceTest) {
+//      SD_presence = false;
+//      Serial.println(F("SD retirée"));
+//      displaySDPresence(); // si carte retirée, afficher "Carte SD retirée"
+//    }else{
+//      presenceTest.close();  
+//    }
     
   }
-
-  duree = millis() - duree;
-  Serial.println("SD Presence a duré " + String( duree ) + " ms");
   
   return SD_presence;
 }
@@ -317,10 +303,10 @@ void displaydata() {
   display.print("  V");
 
   display.setCursor(unitsPadding, 1);
-  display.print(current_mA > 1000 ? " A" : " mA");
+  display.print(current_mA > 1000 ? "  A" : " mA");
 
   display.setCursor(unitsPadding, 2);
-  display.print(loadvoltage * current_mA > 10000 ? " W" : " mW");
+  display.print(loadvoltage * current_mA > 10000 ? "  W" : " mW");
 
   display.setCursor(unitsPadding, 3);
   display.println(energy > 10000 ? " Wh" : "mWh");
@@ -431,9 +417,7 @@ void inavalues() {
   shuntvoltage = INA.getShuntMicroVolts(0)/1000.0;    // en mV
   busvoltage = INA.getBusMilliVolts(0)/1000.0;        // en mV
   current_mA = INA.getBusMicroAmps(0)/1000.0;         // en mA
+  current_mA *= CURRENT_RESCALER;                     // Corriger la valeur du shunt
   loadvoltage = busvoltage + (shuntvoltage / 1000);   // en mV
   energy = energy + loadvoltage * current_mA / 3600;  // en mWh
 }
-
-
-

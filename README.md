@@ -10,4 +10,4 @@ It uses a 0.96" 128*64 OLED display for direct feedback, a SD breakout module fo
 
 [Bill Greiman's SdFat library](https://github.com/greiman/SdFat)
 
-[SV-Zanshin's INA library](https://github.com/SV-Zanshin/INA)
+[Arnd "SV-Zanshin"'s INA library](https://github.com/SV-Zanshin/INA)

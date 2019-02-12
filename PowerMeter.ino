@@ -2,6 +2,8 @@
 #include <INA.h>
 INA_Class INA;
 
+// #define TEST_MODE
+
 //SD logger
 #include "SdFat.h"
 #define CS 4 // chip select
@@ -29,17 +31,20 @@ SSD1306AsciiAvrI2c display;
 #define RELAY_HIGH HIGH
 #define RELAY_LOW LOW
 
+#define INTERVAL 100 // ms
+#define INTERVALS_PER_HOUR 36000 // actualisations par heure, pour calculer les mAh et les mWh
 
 unsigned long previousMillis = 0;
 unsigned int loops = 0;
-#define INTERVAL 100 // ms
 
-float shuntvoltage = 0;
-float busvoltage = 0;
-float current_mA = 0;
-float loadvoltage = 0;
-float energy = 0;
+float shuntvoltage = 0; // en mV
+float busvoltage = 0; // en mV
+float current_mA = 0; // en mA
+float loadvoltage = 0; // en mV
+float energy = 0; // en µW
+float capacity = 0; // en µAh
 #define CURRENT_RESCALER 0.559808 // facteur proportionnel à calculer expérimentalement pour corriger la tolérance du shunt 0.1 Ohm
+float current_offset = -1024; // en µA, corrigé à la volée si excessif
 
 // Valeurs pas défaut des cutoffs
 float Vcutoff = 3.0; // 3.0 volts (cellule lithium)
@@ -82,18 +87,12 @@ void setup() {
     
   displaySDPresence();
 
-  //int device = 
-//  INA.begin(3.2,100000);                                                      // Set expected Amps and resistor
-  INA.begin(3.2,55981);                                                      // Set expected Amps and resistor
-//  INA.begin(3.2,55981);                                                      // Set expected Amps and resistor
-  // 0.18 Ohms ?
-  INA.setBusConversion(8500);                                                 // Maximum conversion time 8.244ms  //
-  INA.setShuntConversion(8500);                                               // Maximum conversion time 8.244ms  //
-  INA.setAveraging(128);                                                      // Average each reading n-times     //
-  INA.setMode(INA_MODE_CONTINUOUS_BOTH);                                      // Bus/shunt measured continuously  //
+  INA.begin(3.2,55981);                     // Set expected Amps and resistor
+  INA.setBusConversion(8500);               // Maximum conversion time 8.244ms
+  INA.setShuntConversion(8500);             // Maximum conversion time 8.244ms
+  INA.setAveraging(128);                    // Average each reading n-times
+  INA.setMode(INA_MODE_CONTINUOUS_BOTH);    // Bus/shunt measured continuously
 }
-
-//boolean checkSDPresence();
 
 /**************************************************
  * Main loop
@@ -107,8 +106,7 @@ void loop() {
     }
     
     previousMillis = millis();
-
-    
+   
     inavalues();
 
     checkButtons();
@@ -205,17 +203,20 @@ void storeData(){
     if (powerLog) {
       if(!alreadyCreated){
           powerLog.println(F("time (ms);loadVoltage (mV);current (mA);energy (mWh);capacity (mAh)"));
-          
       }
 
-      String row = (String(millis()) + ";" +  String(loadvoltage, 3) + ";" + String(current_mA, 3) + ";" + String(energy, 3) + ";" + String(energy/loadvoltage, 3));
+      String row = String(millis()) + ";" 
+        +  String(loadvoltage, 3) + ";" 
+        + String(current_mA, 3) + ";" 
+        + String(energy, 3) + ";" 
+        + String(capacity, 3);
 
       #if USE_COMMA
         row.replace('.', ',');        
       #endif
       powerLog.println(row);
       
-      Serial.println(row);
+      // Serial.println(row);
       
       powerLog.close();
     }
@@ -249,23 +250,7 @@ boolean checkSDPresence(){
     SD_presence = false;
       Serial.println(F("SD retirée"));
       displaySDPresence(); // si carte retirée, afficher "Carte SD retirée"
-      presenceTest = SD.open("presence.test", FILE_WRITE);
-//    int tries = 2;
-//
-//    // On a droit à X essais pour éviter les faux négatifs
-//    while(!presenceTest && tries > 0){
-//      presenceTest = SD.open("presence.test", FILE_WRITE);
-//      tries--;  
-//    }
-//    
-//    if (!presenceTest) {
-//      SD_presence = false;
-//      Serial.println(F("SD retirée"));
-//      displaySDPresence(); // si carte retirée, afficher "Carte SD retirée"
-//    }else{
-//      presenceTest.close();  
-//    }
-    
+      presenceTest = SD.open("presence.test", FILE_WRITE);   
   }
   
   return SD_presence;
@@ -276,7 +261,6 @@ boolean checkSDPresence(){
  * Appelle aussi l'affichage des infos secondaires
  */
 void displaydata() {
-  //Serial.println("Displaying data");
   const int valsPadding = 31; // marge à gauche des valeurs
   const int unitsPadding = valsPadding + 8*6; // marge à gauche des unités
 
@@ -306,20 +290,19 @@ void displaydata() {
   display.print(current_mA > 1000 ? "  A" : " mA");
 
   display.setCursor(unitsPadding, 2);
-  display.print(loadvoltage * current_mA > 10000 ? "  W" : " mW");
+  display.print(loadvoltage * current_mA > 1000 ? "  W" : " mW");
 
   display.setCursor(unitsPadding, 3);
-  display.println(energy > 10000 ? " Wh" : "mWh");
+  display.println(capacity > 10000 ? " Ah" : "mAh");
 
   display.setCursor(valsPadding, 1);
   display.println(current_mA > 1000 ? current_mA / 1000 : current_mA, 3);
   
-  
   display.setCursor(valsPadding, 2);
-  display.println(loadvoltage * current_mA > 10000 ? (loadvoltage * current_mA) / 1000 : loadvoltage * current_mA, 3);
-  
+  display.println(loadvoltage * current_mA > 1000 ? (loadvoltage * current_mA) / 1000 : loadvoltage * current_mA, 3); // mW
+
   display.setCursor(valsPadding, 3);
-  display.println(energy > 10000 ? energy/1000 : energy, 3);
+  display.println(capacity > 10000 ? capacity/1000 : capacity, 3); // mAh
 }
 
 /**
@@ -415,9 +398,38 @@ void displaySDPresence(){
  */
 void inavalues() {
   shuntvoltage = INA.getShuntMicroVolts(0)/1000.0;    // en mV
-  busvoltage = INA.getBusMilliVolts(0)/1000.0;        // en mV
-  current_mA = INA.getBusMicroAmps(0)/1000.0;         // en mA
-  current_mA *= CURRENT_RESCALER;                     // Corriger la valeur du shunt
-  loadvoltage = busvoltage + (shuntvoltage / 1000);   // en mV
-  energy = energy + loadvoltage * current_mA / 3600;  // en mWh
+  busvoltage = INA.getBusMilliVolts(0)/1000.0;        // en V
+  current_mA = INA.getBusMicroAmps(0);                // en µA
+  current_mA += current_offset;                       // correction offset du courant lu (ex : 0.1024 mA à vide -> offset de -1024)
+
+  #ifdef TEST_MODE
+    Serial.println("DEBUG MODE ON");
+    // En théorie, si on laisse tourner 1h on a du 2 Ah / 10Wh à la fin
+    current_mA = 2000000; // 2 A
+    busvoltage = 5; // 5V
+    shuntvoltage = 0;
+    current_offset = 0;
+  #endif
+  
+  if(current_mA < 0){ // si l'offset de correction est trop fort, le diminuer pour retomber sur 0
+    current_offset -= current_mA;
+    current_mA = 0;
+  }
+  
+  current_mA /= 1000; // repasser des µA aux mA
+  
+  #ifndef TEST_MODE
+    current_mA *= CURRENT_RESCALER;                     // Corriger la valeur du shunt
+  #endif
+  
+  loadvoltage = busvoltage + (shuntvoltage / 1000);   // en V
+  energy += (loadvoltage * current_mA)  / INTERVALS_PER_HOUR;         // en mWh
+  capacity += current_mA / INTERVALS_PER_HOUR;        // en mAh
+
+  #ifdef TEST_MODE
+    Serial.println( String(loadvoltage) + "V, " + String(current_mA) + "mA = " + String(loadvoltage * current_mA) + "mW; energy : " + String(energy) + "mWh;capa : " + String(capacity) + "mAh"  );
+    delay(1000);
+  #endif
+  
+
 }
